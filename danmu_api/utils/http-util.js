@@ -25,6 +25,8 @@ function linkSignal(externalSignal, internalController) {
 export async function httpGet(url, options = {}) {
   // 从 options 中获取重试次数，默认为 0
   const maxRetries = parseInt(options.retries || '0', 10) || 0;
+  // 提取允许放行的特定状态码白名单
+  const validStatusCodes = Array.isArray(options.validStatusCodes) ? options.validStatusCodes : [];
   let lastError;
 
   // 执行请求，包含重试逻辑
@@ -46,17 +48,33 @@ export async function httpGet(url, options = {}) {
     linkSignal(options.signal, controller);
 
     try {
-      const response = await fetch(url, {
-        method: 'GET',
-        headers: {
-          ...options.headers,
-        },
-        signal: controller.signal
-      });
+      // 兼容iOS巨魔环境：使用node-fetch替代内置fetch
+      let response;
+      if (typeof WebAssembly === 'undefined') {
+        log("info", "iOS环境降级使用node-fetch");
+        const fetch = (await import('node-fetch')).default;
+        response = await fetch(url, {
+          method: 'GET',
+          headers: {
+            ...options.headers,
+          },
+          signal: controller.signal
+        });
+      } else {
+        // 现代浏览器环境
+        response = await fetch(url, {
+          method: 'GET',
+          headers: {
+            ...options.headers,
+          },
+          signal: controller.signal
+        });
+      }
 
       clearTimeout(timeoutId);
 
-      if (!response.ok) {
+      // 非 2xx 且不在白名单内的状态码抛出异常
+      if (!response.ok && !validStatusCodes.includes(response.status)) {
         throw new Error(`HTTP error! status: ${response.status}`);
       }
 
@@ -84,20 +102,34 @@ export async function httpGet(url, options = {}) {
         // 获取 ArrayBuffer
         const arrayBuffer = await response.arrayBuffer();
 
-        // 使用 DecompressionStream 进行解压
-        // "deflate" 对应 zlib 的 inflate
-        const decompressionStream = new DecompressionStream("deflate");
-        const decompressedStream = new Response(
-          new Blob([arrayBuffer]).stream().pipeThrough(decompressionStream)
-        );
-
-        // 读取解压后的文本
+        // 兼容iOS巨魔环境：检查DecompressionStream是否可用
         let decodedData;
-        try {
-          decodedData = await decompressedStream.text();
-        } catch (e) {
-          log("error", "[请求模拟] 解压缩失败", e);
-          throw e;
+        if (typeof DecompressionStream !== 'undefined') {
+          // 现代浏览器环境
+          const decompressionStream = new DecompressionStream("deflate");
+          const decompressedStream = new Response(
+            new Blob([arrayBuffer]).stream().pipeThrough(decompressionStream)
+          );
+          try {
+            decodedData = await decompressedStream.text();
+          } catch (e) {
+            log("error", "[请求模拟] 解压缩失败", e);
+            throw e;
+          }
+        } else {
+          // iOS巨魔环境降级处理：使用pako库
+          log("info", "iOS环境降级使用pako解压");
+          try {
+            // 动态导入pako库
+            const pako = await import('pako');
+            // 解压数据
+            const inflateResult = pako.inflate(new Uint8Array(arrayBuffer));
+            // 转换为字符串
+            decodedData = new TextDecoder('utf-8').decode(inflateResult);
+          } catch (e) {
+            log("error", "[请求模拟] pako解压缩失败", e);
+            throw e;
+          }
         }
 
         data = decodedData; // 更新解压后的数据
@@ -187,6 +219,7 @@ export async function httpGet(url, options = {}) {
 export async function httpPost(url, body, options = {}) {
   // 从 options 中获取重试次数，默认为 0
   const maxRetries = parseInt(options.retries || '0', 10) || 0;
+  const validStatusCodes = Array.isArray(options.validStatusCodes) ? options.validStatusCodes : [];
   let lastError;
 
   // 执行请求，包含重试逻辑
@@ -223,14 +256,22 @@ export async function httpPost(url, body, options = {}) {
     }
 
     try {
-      const response = await fetch(url, fetchOptions);
+      // 兼容iOS巨魔环境：使用node-fetch替代内置fetch
+      let response;
+      if (typeof WebAssembly === 'undefined') {
+        log("info", "iOS环境降级使用node-fetch");
+        const fetch = (await import('node-fetch')).default;
+        response = await fetch(url, fetchOptions);
+      } else {
+        // 现代浏览器环境
+        response = await fetch(url, fetchOptions);
+      }
 
       clearTimeout(timeoutId);
 
       const data = await response.text();
 
-
-      if (!response.ok) {
+      if (!response.ok && !validStatusCodes.includes(response.status)) {
         log("error", `[请求模拟] response data: `, data);
         throw new Error(`HTTP error! status: ${response.status}`);
       }
@@ -310,7 +351,8 @@ export async function httpPost(url, body, options = {}) {
 async function httpRequestMethod(method, url, body, options = {}) {
   log("info", `[请求模拟] HTTP ${method}: ${url}`);
 
-  const { headers = {}, params, allow_redirects = true } = options;
+  const { headers = {} } = options;
+  const validStatusCodes = Array.isArray(options.validStatusCodes) ? options.validStatusCodes : [];
 
   const fetchOptions = {
     method,
@@ -322,6 +364,10 @@ async function httpRequestMethod(method, url, body, options = {}) {
     fetchOptions.body = body;
   }
 
+  if (options.body !== undefined && options.body !== null) {
+    fetchOptions.body = options.body;
+  }
+
   // 如果传递了 signal，直接透传给 fetch
   if (options.signal) {
     fetchOptions.signal = options.signal;
@@ -331,7 +377,7 @@ async function httpRequestMethod(method, url, body, options = {}) {
     const response = await fetch(url, fetchOptions);
     const textData = await response.text();
 
-    if (!response.ok) {
+    if (!response.ok && !validStatusCodes.includes(response.status)) {
       log("error", `[请求模拟] response data: `, textData);
       throw new Error(`HTTP error! status: ${response.status}`);
     }

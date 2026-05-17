@@ -6,7 +6,7 @@
 - [功能详解](#功能详解)
   - [1. 配置预览](#1-配置预览)
   - [2. 日志查看](#2-日志查看)
-  - [3. 接口调试](#3-接口调试)
+  - [3. 接口调试/弹幕测试](#3-接口调试弹幕测试)
   - [4. 推送弹幕](#4-推送弹幕)
   - [5. 请求记录](#5-请求记录)
   - [6. 系统配置](#6-系统配置)
@@ -32,7 +32,7 @@ UI 系统提供了以下主要功能模块：
 
 1. **配置预览** - 查看当前生效的环境变量配置
 2. **日志查看** - 实时查看系统运行日志
-3. **接口调试** - 测试和调试 API 接口
+3. **接口调试/弹幕测试** - 测试和调试弹幕 API 接口
 4. **推送弹幕** - 向播放器推送弹幕
 5. **请求记录** - 查看最近的 API 请求记录
 6. **系统配置** - 环境变量配置和系统管理
@@ -62,7 +62,7 @@ UI 系统需要通过在 URL 中添加 TOKEN 来访问，以确保安全性：
 - 刷新日志功能
 - 清空日志功能（需要 ADMIN_TOKEN）
 
-### 3. 接口调试
+### 3. 接口调试/弹幕测试
 
 接口调试功能允许您：
 
@@ -75,6 +75,17 @@ UI 系统需要通过在 URL 中添加 TOKEN 来访问，以确保安全性：
   - 匹配动漫 - `/api/v2/match`
   - 获取番剧详情 - `/api/v2/bangumi/:animeId`
   - 获取弹幕 - `/api/v2/comment/:commentId`
+
+弹幕测试功能允许您：
+
+- 自动匹配测试：输入文件名自动匹配并获取弹幕，模拟播放器自动加载流程
+- 手动匹配测试：搜索动漫 → 选择番剧 → 选择剧集 → 获取弹幕
+- 弹幕统计：弹幕数、时长、高能时刻、平均密度、匹配时长、类型分布
+- 弹幕热力图：按时间段可视化弹幕密度分布
+- 弹幕列表：支持全部/滚动/顶部/底部过滤，显示颜色和类型标签，懒加载每次100条
+- 导出功能：支持导出JSON和XML格式弹幕文件
+- 时长处理：优先请求 `/api/v2/comment/:commentId?format=json&duration=true` 返回的 `videoDuration`，没有真实时长时再回退到尾部裁剪算法
+- 视图导航优化：搜索结果/剧集详情/弹幕详情逐级切换，带返回按钮和加载动画
 
 ### 4. 推送弹幕
 
@@ -151,8 +162,33 @@ UI 系统需要通过在 URL 中添加 TOKEN 来访问，以确保安全性：
 | Netlify | ✅ | ✅ | ✅ |
 | EdgeOne | ❌ | ✅ | ✅ |
 | Cloudflare | ✅ | ✅ | ✅ |
+| Hugging Face Spaces | ✅ | ✅ | ✅ |
 | Node.js | ❌ | ❌ | ❌ |
 | Docker | ❌ | ❌ | ❌ |
+
+---
+
+### 5. Hugging Face Spaces 平台
+
+#### 需要的变量
+- `DEPLOY_PLATFROM_ACCOUNT`: Hugging Face 用户名或组织名
+- `DEPLOY_PLATFROM_PROJECT`: Space 名称
+- `DEPLOY_PLATFROM_TOKEN`: User Access Token
+
+#### 获取步骤
+
+**获取 Account 与 Space 名称**
+
+1. 打开你的 Hugging Face Space 页面
+2. Space 地址格式为 `https://huggingface.co/spaces/{account}/{space}`
+3. `{account}` 填入 `DEPLOY_PLATFROM_ACCOUNT`，`{space}` 填入 `DEPLOY_PLATFROM_PROJECT`
+
+**获取 User Access Token (`DEPLOY_PLATFROM_TOKEN`)**
+
+1. 登录 [Hugging Face Access Tokens](https://huggingface.co/settings/tokens)
+2. 创建 Fine-grained token 或 Write token
+3. 如果使用 Fine-grained token，请授予目标 Space 的写入权限
+4. **立即复制并保存** Token(只显示一次)
 
 ---
 

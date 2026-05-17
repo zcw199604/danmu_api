@@ -223,6 +223,7 @@ async function testNewFlow() {
       vodReturnMode: 'fastest',
       vodRequestTimeout: 10000,
       bilibiliCookie: '',
+      doubanCookie: '',
       platformOrder: [],
       episodeTitleFilter: '',
       enableAnimeEpisodeFilter: 'false',
@@ -233,8 +234,10 @@ async function testNewFlow() {
       groupMinute: 1,
       danmuLimit: 0,
       danmuSimplifiedTraditional: 'false',
+      danmuOffset: '',
       convertTopBottomToScroll: 'false',
       convertColor: 'default',
+      colorPool: '16777215,16744319,16752762,16774799,9498256,8388564,8900346,14204888,16758465',
       likeSwitch: 'true',
       proxyUrl: '',
       tmdbApiKey: '',
@@ -256,7 +259,7 @@ async function testNewFlow() {
       // title: "https://www.bilibili.com/bangumi/play/ep1231564",
       // title: "https://www.bilibili.com/video/av170001?p=2",
       // title: "https://www.bilibili.com/video/BV17x411w7KC?p=3",
-      title: '罗小黑战记2',
+      title: '寻秦记',
       ...commonParams,
     });
     if (verbose) {

@@ -5,13 +5,37 @@ import { httpGet, httpPost } from "../utils/http-util.js";
 import { convertToAsciiSum } from "../utils/codec-util.js";
 import { generateValidStartDate } from "../utils/time-util.js";
 import { addAnime, removeEarliestAnime } from "../utils/cache-util.js";
-import { printFirst200Chars, titleMatches } from "../utils/common-util.js";
+import { printFirst200Chars, titleMatches, getExplicitSeasonNumber, extractSeasonNumberFromAnimeTitle } from "../utils/common-util.js";
 import { SegmentListResponse } from '../models/dandan-model.js';
 
 // =====================
 // 获取腾讯视频弹幕
 // =====================
 export default class TencentSource extends BaseSource {
+  extractAliasesFromHintWords(hintWords) {
+    if (!hintWords || typeof hintWords !== 'string') return [];
+
+    const aliases = [];
+    const addAlias = (value) => {
+      const alias = String(value || '').replace(/<\/?em>/g, '').trim();
+      if (alias && !aliases.includes(alias)) aliases.push(alias);
+    };
+
+    const aliasMatch = hintWords.match(/(?:又名|别名)\s*[：:]\s*(.+)$/);
+    if (!aliasMatch) return aliases;
+
+    aliasMatch[1]
+      .split(/[、,，/|]+/)
+      .forEach(addAlias);
+
+    return aliases;
+  }
+
+  titleOrAliasMatches(anime, queryTitle, querySeason = null) {
+    if (titleMatches(anime.title, queryTitle, querySeason)) return true;
+    return Array.isArray(anime.aliases) && anime.aliases.some(alias => titleMatches(alias, queryTitle, querySeason));
+  }
+
   /**
    * 过滤腾讯视频搜索项
    * @param {Object} item - 搜索项
@@ -55,6 +79,32 @@ export default class TencentSource extends BaseSource {
       return null;
     }
 
+    let mediaType = contentType;
+
+    // 提取 3D 与 2D 属性标签并追加至媒体类型
+    let is3D = false;
+    let is2D = false;
+    if (videoInfo.coverDoc) {
+        if (videoInfo.coverDoc.richTags && Array.isArray(videoInfo.coverDoc.richTags)) {
+            videoInfo.coverDoc.richTags.forEach(tag => {
+                if (tag.text && tag.text.includes('3D')) is3D = true;
+                if (tag.text && tag.text.includes('2D')) is2D = true;
+            });
+        }
+        if (videoInfo.coverDoc.tags && Array.isArray(videoInfo.coverDoc.tags)) {
+            videoInfo.coverDoc.tags.forEach(tag => {
+                if (tag && tag.includes('3D')) is3D = true;
+                if (tag && tag.includes('2D')) is2D = true;
+            });
+        }
+    }
+    
+    if (is3D) {
+        mediaType = "3D" + mediaType;
+    } else if (is2D) {
+        mediaType = "2D" + mediaType;
+    }
+
     // 过滤非腾讯视频内容
     const allSites = (videoInfo.playSites || []).concat(videoInfo.episodeSites || []);
     if (allSites.length > 0 && !allSites.some(site => site.enName === 'qq')) {
@@ -70,12 +120,14 @@ export default class TencentSource extends BaseSource {
     }
 
     const episodeCount = contentType === '电影' ? 1 : (videoInfo.subjectDoc ? videoInfo.subjectDoc.videoNum : 0);
+    const aliases = this.extractAliasesFromHintWords(videoInfo.hintWords).filter(alias => alias !== title);
 
     return {
       provider: "tencent",
       mediaId: mediaId,
       title: title,
-      type: contentType,  // 使用中文类型,与360/vod保持一致
+      aliases: aliases,
+      type: mediaType,  
       year: videoInfo.year,
       imageUrl: videoInfo.imgUrl,
       episodeCount: episodeCount
@@ -155,6 +207,31 @@ export default class TencentSource extends BaseSource {
       if (itemList.length === 0 && data.data && data.data.normalList && data.data.normalList.itemList) {
         log("info", "[Tencent] MainNeed box 未找到，使用 normalList");
         itemList = data.data.normalList.itemList;
+      }
+
+      // 追加「相关影视」box 中 title 包含 keyword 的 itemList
+      if (data.data && data.data.areaBoxList) {
+        for (const box of data.data.areaBoxList) {
+          if (
+            box.itemList &&
+            box.boxTitle &&
+            Array.isArray(box.boxTitle.boxTitles) &&
+            box.boxTitle.boxTitles.includes("相关影视")
+          ) {
+            const relatedItems = box.itemList.filter(item =>
+              item.videoInfo &&
+              item.videoInfo.title &&
+              item.videoInfo.title.includes(keyword)
+            );
+            if (relatedItems.length > 0) {
+              log("info", `[Tencent] 追加「相关影视」box 中匹配 "${keyword}" 的 ${relatedItems.length} 个项目`);
+              itemList = [...itemList, ...relatedItems];
+            } else {
+              log("info", `[Tencent] 「相关影视」box 中无匹配 "${keyword}" 的项目`);
+            }
+            break;
+          }
+        }
       }
 
       if (itemList.length === 0) {
@@ -338,7 +415,15 @@ export default class TencentSource extends BaseSource {
     }
   }
 
-  async handleAnimes(sourceAnimes, queryTitle, curAnimes) {
+  /**
+   * 处理搜索结果
+   * @param {Array} sourceAnimes 原始数据
+   * @param {string} queryTitle 关键词
+   * @param {Array} curAnimes 结果池
+   * @param {Map|null} detailStore 详情缓存
+   * @param {number|null} querySeason 目标季度
+   */
+  async handleAnimes(sourceAnimes, queryTitle, curAnimes, detailStore = null, querySeason = null) {
     const tmpAnimes = [];
 
     // 添加错误处理，确保sourceAnimes是数组
@@ -347,10 +432,28 @@ export default class TencentSource extends BaseSource {
       return [];
     }
 
+    // 基础标题、别名与季度匹配过滤
+    let filteredAnimes = sourceAnimes.filter(s => this.titleOrAliasMatches(s, queryTitle, querySeason));
+
+    // 提取搜索词中的明确季度信息或使用传入的季度参数
+    const resolvedQuerySeason = querySeason !== null ? querySeason : getExplicitSeasonNumber(queryTitle);
+
+    // 初始列表预过滤机制：若用户指定了季度，优先检查结果中是否已包含匹配项
+    if (resolvedQuerySeason !== null) {
+      const seasonFiltered = filteredAnimes.filter(anime => {
+        const s = extractSeasonNumberFromAnimeTitle(anime.title).season;
+        return s === resolvedQuerySeason || (resolvedQuerySeason === 1 && s === null);
+      });
+
+      // 如果已命中目标，减少详情请求量
+      if (seasonFiltered.length > 0) {
+        filteredAnimes = seasonFiltered;
+        log("info", `[Tencent] 结果已命中目标季(第${resolvedQuerySeason}季)，跳过非目标季相关请求`);
+      }
+    }
+
     // 使用 map 和 async 时需要返回 Promise 数组，并等待所有 Promise 完成
-    const processTencentAnimes = await Promise.all(sourceAnimes
-      .filter(s => titleMatches(s.title, queryTitle))
-      .map(async (anime) => {
+    const processTencentAnimes = await Promise.all(filteredAnimes.map(async (anime) => {
         try {
           const eps = await this.getEpisodes(anime.mediaId);
           let links = [];
@@ -368,12 +471,22 @@ export default class TencentSource extends BaseSource {
           }
 
           if (links.length > 0) {
+            // 从第一集标题中提取版本信息
+            const firstEpTitle = eps[0].unionTitle || eps[0].title || `第1集`;
+            let displayTitle = anime.title;
+
+            // 检查第一集标题是否包含 anime.title 且匹配 xxxx[xxx版] 格式
+            const versionMatch = firstEpTitle.match(/\[.+版\]/);
+            if (versionMatch && firstEpTitle.includes(anime.title)) {
+              displayTitle = `${anime.title}${versionMatch[0]}`;
+            }
+
             // 将字符串mediaId转换为数字ID (使用哈希函数)
             const numericAnimeId = convertToAsciiSum(anime.mediaId);
             let transformedAnime = {
               animeId: numericAnimeId,
               bangumiId: anime.mediaId,
-              animeTitle: `${anime.title}(${anime.year})【${anime.type}】from tencent`,
+              animeTitle: `${displayTitle}(${anime.year})【${anime.type}】from tencent`,
               type: anime.type,
               typeDescription: anime.type,
               imageUrl: anime.imageUrl,
@@ -382,11 +495,12 @@ export default class TencentSource extends BaseSource {
               rating: 0,
               isFavorited: true,
               source: "tencent",
+              aliases: anime.aliases || [],
             };
 
             tmpAnimes.push(transformedAnime);
 
-            addAnime({...transformedAnime, links: links});
+            addAnime({...transformedAnime, links: links}, detailStore);
 
             if (globals.animes.length > globals.MAX_ANIMES) removeEarliestAnime();
           }
